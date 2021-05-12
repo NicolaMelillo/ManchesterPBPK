@@ -9,7 +9,7 @@
 # - the structure is hard coded, therefore, it is not straightforward changing compartments and compartment order...
 
 
-setwd("C:/Users/nicol/Documents/POSTDOC/projects/systemsforcasting/PBPK/codes/2021_04_19_PBPK_model_r_v03")
+#setwd("")
 
 ### load libraries & functions -------------------------------------------------------------------------------------
 
