@@ -1,7 +1,7 @@
 # Server PBPK model in R
 # Nicola Melillo, Hitesh Mistry, 11/05/2021
 
-setwd("C:/Users/nicol/Documents/POSTDOC/projects/systemsforcasting/PBPK/codes/2021_05_12_PBPK_app_v05p1")
+#setwd("")
 
 # libraries
 library(shiny)
