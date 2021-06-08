@@ -6,7 +6,7 @@
 #   time    [h]
 
 ### notes
-# - the structure is hard coded, therefore, it is not straightforward changing compartments and compartment order...
+# - the model structure is hard coded, therefore, it is not straightforward changing compartments and compartment order...
 
 
 #setwd("")
@@ -15,6 +15,7 @@
 
 # libraries
 library(readxl)
+library(RxODE)
 library(deSolve)
 library(ggplot2)
 library(RColorBrewer)
@@ -22,9 +23,8 @@ library(gridExtra)
 
 # my functions
 source("./functions/import_param.R")
-source("./functions/PBPK_model.R")
-source("./functions/functions_simulations.R")
-source("./functions/functions_plot2.R")
+source("./functions/PBPK_model_rxode.R")
+source("./functions/functions_plot3.R")
 
 
 ### define drug parameters -----------------------------------------------------------------------------------------
@@ -43,9 +43,9 @@ source("./functions/functions_plot2.R")
 # BP     [adim]    blood to plasma ratio
 # pKa    [adim]
 mw     <- 300
-type   <- 2
+type   <- 0
 logPow <- 1
-fup    <- 1
+fup    <- 0.1
 BP     <- 0.5
 pKa    <- 7
 
@@ -79,7 +79,7 @@ if(type==1){
 }else if(type==2){
   Csint_w <- Csw / (1 + 10^(-pHw + pKa))
 }else{
-  Csint_w <- logDvow
+  Csint_w <- Csw
 }
 # Csint <- Csint_w  # uncomment if you have water solubility!
 
@@ -124,9 +124,14 @@ param_drug = c(Pow    = 10^(logPow),
 )
 
 # load PBPK parameters
-specie          <- "beagle"
+specie          <- "human"
+sex             <- "female"
 if(specie=="human"){
-  filename <- "./data/PBPK_parameters/2021_02_27_pbpk_parameters_human.xlsx"
+  if(sex=="female"){
+    filename <- "./data/PBPK_parameters/2021_02_27_pbpk_parameters_human_female.xlsx"
+  }else{
+    filename <- "./data/PBPK_parameters/2021_02_27_pbpk_parameters_human_male.xlsx"
+  }
 }else if(specie=="mouse"){
   filename <- "./data/PBPK_parameters/2021_03_23_pbpk_parameters_mices.xlsx"
 }else if(specie=="beagle"){
@@ -135,74 +140,56 @@ if(specie=="human"){
   filename <- "./data/PBPK_parameters/2021_04_16_pbpk_parameters_dogs.xlsx"
 }
 
-param.PBPK      <- getPBPKParam(filename, param_drug, type_part_coeff, specie)
-comp.names      <- c(param.PBPK$comp_PBPK_names, param.PBPK$comp_ACAT_names)
-lo              <- length(comp.names)
+param.PBPK       <- getPBPKParam(filename, param_drug, type_part_coeff, specie)
+param.PBPK.rxode <- reorganizeParam.rxode(param.PBPK)
+comp.names       <- c(param.PBPK$comp_PBPK_names, param.PBPK$comp_ACAT_names)
+names.PBPK       <- param.PBPK$comp_PBPK_names
+names.ACAT       <- param.PBPK$comp_ACAT_names
+lo               <- length(comp.names)
 
-
-### define schedule -----------------------------------------------------------------------------------------
-
-func <- PBPK.ACAT
-
-# define schedule
-comp_dose         <- "stomach_s"
-dose              <- 10 * param.PBPK$general_p["weight"] # [mg/kg] -> [mg]
-time_begin        <- 0
-time_interval     <- 3
-n_rep             <- 3
-time_interval_end <- 24
-
-schedule <- defineSchedule(dose, time_begin, time_interval, n_rep, time_interval_end)
-delta.t <- 0.01
+param.rxode <- c(param.PBPK.rxode, param_drug)
 
 
 ### define changes for multiple simulations ------------------------------------------------------------------------
 
+inits <- c()
+
+ev <- eventTable(amount.units="mg", time.units="hr") %>%
+  add.dosing(dose=10, dosing.to="stomach_s", nbr.doses=1, dosing.interval=12) %>%
+  add.sampling(seq(0,24,by=0.01))
+
+ev
+
 # if you want to change some param_drug you need to re-run function for param.PBPK! Especially for formulation properties and parameters used to derive the partition coefficients
 # param.PBPK  <- getPBPKParam(filename, param_drug, type_part_coeff)
-sim1 <- list(func=func, schedule=schedule, delta.t=delta.t, comp_dose=comp_dose, param.PBPK=param.PBPK)
+sim1 <- list(param.rxode = param.rxode, ev = ev, inits = inits)
 
 
 sim2 <- sim1
-sim2$param.PBPK$param_drug["Csint"] <- sim1$param.PBPK$param_drug["Csint"]/1000
+sim2$param.rxode["Csint"] <- 0
 
 sim3 <- sim1
-sim3$param.PBPK$param_drug["Peff"] <- sim1$param.PBPK$param_drug["Peff"]*10
+sim3$param.rxode["Peff"] <- sim3$param.rxode["Peff"]*0
 
-sim4 <- sim1
-sim4$param.PBPK$param_drug["Peff"] <- sim1$param.PBPK$param_drug["Peff"]*0
-
-sim5 <- sim1
-sim5$param.PBPK$param_drug["CLh"] <- sim1$param.PBPK$param_drug["CLh"]*0
-
-sim6 <- sim1
-sim6$param.PBPK$param_drug["CLr"] <- sim1$param.PBPK$param_drug["CLr"]*0
-
-sim7 <- sim1
-sim7$param.PBPK$param_drug["CLh"] <- sim1$param.PBPK$param_drug["CLh"]*0
-sim7$param.PBPK$param_drug["CLr"] <- sim1$param.PBPK$param_drug["CLr"]*0
 
 # here you can add any simulation param that you want...
 list.sim <- list(sim1, sim2, sim3)
 l.param.set <- length(list.sim)
 
-names.sim <- c("baseline", "Csint/100", "Peff*10", "sim4", "sim5", "sim6", "sim7")
+names.sim <- c("baseline", "Csint*0", "Peff*0")
 
 ### simulate the model & plot the system ---------------------------------------------------------------------------
 system.out.list <- list()
 for(i in 1:l.param.set){
-  print(i)
   simi <- list.sim[[i]]
-  system.out.list[[i]] <- simulation(simi$func, 
-                           simi$schedule, 
-                           simi$delta.t, 
-                           simi$comp_dose, 
-                           simi$param.PBPK )
+  system.out.list[[i]] <- PBPK.ACAT %>% rxSolve(simi$param.rxode, simi$ev, simi$inits)
 }
 
 
 # plot
-p.tot <- plotPBPK(system.out.list, list.sim, names.sim = names.sim)
+flag_log <- 0
+data.PK <- list()
+p.tot <- plotPBPK(system.out.list, list.sim, names.sim = names.sim, names.PBPK, names.ACAT, flag_log, data.PK)
 
 # plot all the organs and tissues (except absorbed and sink enterocytes compartments)
 #do.call("grid.arrange", c(p.tot$p.pbpk, ncol=5, nrow=4))      # plot all organs mass PK

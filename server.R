@@ -1,11 +1,13 @@
 # Server PBPK model in R
-# Nicola Melillo, Hitesh Mistry, 11/05/2021
+# Nicola Melillo, Hitesh Mistry, 08/06/2021
 
-setwd("C:/Users/nicol/Documents/POSTDOC/projects/systemsforcasting/PBPK/codes/2021_05_12_PBPK_app_v05p1")
+#setwd("")
 
 # libraries
 library(shiny)
+library(shinyjs)
 library(readxl)
+library(RxODE)
 library(deSolve)
 library(ggplot2)
 library(RColorBrewer)
@@ -13,195 +15,390 @@ library(gridExtra)
 
 # my functions
 source("./functions/import_param.R")
-source("./functions/PBPK_model.R")
-source("./functions/functions_simulations.R")
-source("./functions/functions_plot2.R")
+source("./functions/PBPK_model_rxode.R")
+source("./functions/functions_plot3.R")
 
 
 
 shinyServer(function(input, output, session) {
   
-  global.system.out <- reactive(list())
   
-  runmodel <- eventReactive(input$runButton, {
-    
-    mw     <- input$MW
-    type   <- as.numeric(input$type)
-    logPow <- input$logPow
-    fup    <- input$fup
-    BP     <- input$BP
-    pKa    <- input$pKa
-    
-    # derive the other molecular parameters (*1)
-    # Handerson Hasselback equation
-    fut     <- 1/( 1 + 0.5*(1-fup)/fup )
-    logDvow <- 1.115 * logPow - 1.35
-    pH.tiss <- 7.4                         # HP, see (*1)
-    if(type==1){
-      logDvow_s <- logDvow - log10(1 + 10^(pH.tiss - pKa))
-    }else if(type==2){
-      logDvow_s <- logDvow - log10(1 + 10^(-pH.tiss + pKa))
-    }else{
-      logDvow_s <- logDvow
-    }
-    
-    ### formulation related parameters
-    # r      [um]      radius of the particle size of the formulation
-    # rho    [g/L]     density of the formulation
-    # Csint  [mg/L]    intrinsic solubility
-    # Peff   [cm/h]    effective permeability across gut wall
-    r     <- input$r
-    rho   <- input$rho
-    Csint <- input$Csint
-    
-    # if you have the water solubility and the pH of the solvent, you can derive the intrinsic solubility
-    #Csw <- 100
-    #pHw <- 6
-    #if(type==1){
-    #  Csint_w <- Csw / (1 + 10^(pHw - pKa))
-    #}else if(type==2){
-    #  Csint_w <- Csw / (1 + 10^(-pHw + pKa))
-    #}else{
-    #  Csint_w <- logDvow
-    #}
-    # Csint <- Csint_w  # uncomment if you have water solubility!
-    
-    
-    
-    # FOR humans: from Papp to Peff, regression!! must be in 10^-4 cm/s (*2)
-    # FOR mice:   consider to use directly the caco2 permeability... must be in 10^-4 cm/s 
-    Peff_caco2  <- input$Peff_caco2  # [10^-4 cm/s]
-    #logPeff     <- 0.4926 * log10(Peff_caco2) - 0.1454
-    Peff        <- Peff_caco2 # 10^(logPeff) * 10^-4 * 3600
-    
-    ### clearances
-    # CLh    [L/h]     intrinsic hepatic clearance
-    # CLr    [L/h]     intrinsic renal clearance
-    # CLent  [L/h]     enterocyte clerance
-    CLh   <- input$Clh
-    CLr   <- input$Clr
-    CLent <- input$Clent
-    
-    ### choose partition coefficients
-    # "PT"    - Poulin & Theil
-    # "bere"  - Berezhkovsky
-    type_part_coeff <- input$PCM
-    
-    param_drug = c(Pow    = 10^(logPow),
-                   Dvow   = 10^(logDvow),
-                   Dvow_s = 10^(logDvow_s),
-                   fup    = fup,
-                   fut    = fut,
-                   BP     = BP,
-                   CLh    = CLh,
-                   CLr    = CLr,
-                   CLent  = CLent,
-                   Peff   = Peff,
-                   r      = r,
-                   mw     = mw,
-                   rho    = rho,
-                   Csint  = Csint,
-                   pKa    = pKa,
-                   type   = type
-    )
-    # load PBPK parameters
-    specie          <- input$Species
-    if(specie=="human"){
-      filename <- "./data/PBPK_parameters/2021_02_27_pbpk_parameters_human.xlsx"
-    }else if(specie=="mouse"){
-      filename <- "./data/PBPK_parameters/2021_03_23_pbpk_parameters_mices.xlsx"
-    }else if(specie=="beagle"){
-      filename <- "./data/PBPK_parameters/2021_04_16_pbpk_parameters_beagles.xlsx"
-    }else if(specie=="dog"){
-      filename <- "./data/PBPK_parameters/2021_04_16_pbpk_parameters_dogs.xlsx"
-    }
-    
-    
-    param.PBPK      <- getPBPKParam(filename, param_drug, type_part_coeff, specie)
-    
-    comp.names      <- c(param.PBPK$comp_PBPK_names, param.PBPK$comp_ACAT_names)
-    lo              <- length(comp.names)
-    func <- PBPK.ACAT
-    
-    # define schedule
-    if (input$Schedule==1){
-      n_rep <- 1 * input$days
-      time_interval <- 24
-      if (input$days==1){
-        time_interval_end <- 0
+  values <- reactiveValues(system.out.list = list(),
+                           list.sim = list(),
+                           names.PBPK = c(),
+                           names.ACAT = c(),
+                           names.sim = c(),
+                           count = 1)  
+  flag.clear <- reactiveValues(flag=0)
+  flag.simulated <- reactiveValues(flag=0)
+  param.drug.library <- reactiveValues(param.drug = list(), 
+                                       PK.data = list(), 
+                                       PK.data.sel = list())
+  
+  ### run the model ------------------------------------
+  #runmodel <- eventReactive(input$runButton, {
+  observeEvent(input$runButton, {
+    withProgress(message = 'Simulating the model', value = 0, {
+      mw     <- input$MW
+      type   <- as.numeric(input$type)
+      logPow <- input$logPow
+      fup    <- input$fup
+      BP     <- input$BP
+      pKa    <- input$pKa
+      
+      # derive the other molecular parameters (*1)
+      # Handerson Hasselback equation
+      fut     <- 1/( 1 + 0.5*(1-fup)/fup )
+      logDvow <- 1.115 * logPow - 1.35
+      pH.tiss <- 7.4                         # HP, see (*1)
+      if(type==1){
+        logDvow_s <- logDvow - log10(1 + 10^(pH.tiss - pKa))
+      }else if(type==2){
+        logDvow_s <- logDvow - log10(1 + 10^(-pH.tiss + pKa))
       }else{
-        time_interval_end <- 24
+        logDvow_s <- logDvow
       }
-    }else if(input$Schedule==2){
-      n_rep <- 2 * input$days
-      time_interval <- 12
-      time_interval_end <- 12
-    }
-    
-    # select compartment for initial conditions
-    if (input$Route==1){
-      comp_dose = "venous_blood"
-    }else if(input$Route==2){
-      comp_dose <- "stomach_s"
-    }else if(input$Route==3){
-      comp_dose <- "stomach_d"
-    }
-    
-    dose              <- input$dose #* param.PBPK$general_p["weight"] # [mg/kg] -> [mg]
-    time_begin        <- 0
-    #time_interval     <- 1
-    #n_rep             <- 1
-    
-    
-    
-    schedule <- defineSchedule(dose, time_begin, time_interval, n_rep, time_interval_end)
-    delta.t <- 0.01
-    
-    sim1 <- list(func=func, schedule=schedule, delta.t=delta.t, comp_dose=comp_dose, param.PBPK=param.PBPK)
-    list.sim <- list(sim1)
-    l.param.set <- length(list.sim)
-    
-    names.sim <- c("sim1")
-    
-    ### simulate the model & plot the system ---------------------------------------------------------------------------
-    system.out.list <- list()
-    for(ii in 1:l.param.set){
-      simi <- list.sim[[ii]]
-      system.out.list[[ii]] <- simulation(simi$func, 
-                                         simi$schedule, 
-                                         simi$delta.t, 
-                                         simi$comp_dose, 
-                                         simi$param.PBPK )
-    }
+      
+      ### formulation related parameters
+      # r      [um]      radius of the particle size of the formulation
+      # rho    [g/L]     density of the formulation
+      # Csint  [mg/L]    intrinsic solubility
+      # Peff   [cm/h]    effective permeability across gut wall
+      r     <- input$r
+      rho   <- input$rho
+      Csint <- input$Csint
+      
+      # if you have the water solubility and the pH of the solvent, you can derive the intrinsic solubility
+      #Csw <- 100
+      #pHw <- 6
+      #if(type==1){
+      #  Csint_w <- Csw / (1 + 10^(pHw - pKa))
+      #}else if(type==2){
+      #  Csint_w <- Csw / (1 + 10^(-pHw + pKa))
+      #}else{
+      #  Csint_w <- logDvow
+      #}
+      # Csint <- Csint_w  # uncomment if you have water solubility!
+      
+      
+      
+      # FOR humans: from Papp to Peff, regression!! must be in 10^-4 cm/s (*2)
+      # FOR mice:   consider to use directly the caco2 permeability... must be in 10^-4 cm/s 
+      Peff_caco2  <- input$Peff_caco2 * 3600 # [10^-4 cm/s] -> [10^-4 cm/h]
+      #logPeff     <- 0.4926 * log10(Peff_caco2) - 0.1454
+      Peff        <- Peff_caco2 # 10^(logPeff) * 10^-4 * 3600
+      
+      ### clearances
+      # CLh    [L/h]     intrinsic hepatic clearance
+      # CLr    [L/h]     intrinsic renal clearance
+      # CLent  [L/h]     enterocyte clerance
+      CLh   <- input$Clh
+      CLr   <- input$Clr
+      CLent <- input$Clent
+      
+      ### choose partition coefficients
+      # "PT"    - Poulin & Theil
+      # "bere"  - Berezhkovsky
+      type_part_coeff <- input$PCM
+      
+      param_drug = c(Pow    = 10^(logPow),
+                     Dvow   = 10^(logDvow),
+                     Dvow_s = 10^(logDvow_s),
+                     fup    = fup,
+                     fut    = fut,
+                     BP     = BP,
+                     CLh    = CLh,
+                     CLr    = CLr,
+                     CLent  = CLent,
+                     Peff   = Peff,
+                     r      = r,
+                     mw     = mw,
+                     rho    = rho,
+                     Csint  = Csint,
+                     pKa    = pKa,
+                     type   = type
+      )
+      
+      
+      # load PBPK parameters
+      specie          <- input$Species
+      if(specie=="human"){
+        if(input$Sex=="female"){
+          filename <- "./data/PBPK_parameters/2021_02_27_pbpk_parameters_human_female.xlsx"
+        }else{
+          filename <- "./data/PBPK_parameters/2021_02_27_pbpk_parameters_human_male.xlsx"
+        }
+      }else if(specie=="mouse"){
+        filename <- "./data/PBPK_parameters/2021_03_23_pbpk_parameters_mices.xlsx"
+      }else if(specie=="beagle"){
+        filename <- "./data/PBPK_parameters/2021_04_16_pbpk_parameters_beagles.xlsx"
+      }else if(specie=="dog"){
+        filename <- "./data/PBPK_parameters/2021_04_16_pbpk_parameters_dogs.xlsx"
+      }
+      
+      param.PBPK       <- getPBPKParam(filename, param_drug, type_part_coeff, specie)
+      param.PBPK.rxode <- reorganizeParam.rxode(param.PBPK)
+      comp.names       <- c(param.PBPK$comp_PBPK_names, param.PBPK$comp_ACAT_names)
+      names.PBPK       <- param.PBPK$comp_PBPK_names
+      names.ACAT       <- param.PBPK$comp_ACAT_names
+      lo               <- length(comp.names)
+      
+      param.rxode <- c(param.PBPK.rxode, param_drug)
+      
+      
+      # define schedule
+      n_rep <- input$daily_admin * input$days
+      time_interval <- 24 / input$daily_admin
+      time_interval_end <- 24
+      
+      
+      # select compartment for initial conditions
+      if (input$Route==1 || input$Route == 4){
+        comp_dose = "venous_blood"
+      }else if(input$Route==2){
+        comp_dose <- "stomach_s"
+      }else if(input$Route==3){
+        comp_dose <- "stomach_d"
+      }
+      
+      if(input$Route == 4){
+        ev <- eventTable(amount.units="mg", time.units="hr") %>%
+          add.dosing(dose=input$dose, dosing.to=comp_dose, nbr.doses=n_rep, dosing.interval=time_interval, dur=input$inf_dur) %>%
+          add.sampling(seq(0,n_rep * time_interval + time_interval_end,by=0.01))
+      }else{
+        ev <- eventTable(amount.units="mg", time.units="hr") %>%
+          add.dosing(dose=input$dose, dosing.to=comp_dose, nbr.doses=n_rep, dosing.interval=time_interval) %>%
+          add.sampling(seq(0,n_rep * time_interval + time_interval_end,by=0.01))
+      }
+      
+      inits <- c()
+      sim1 <- list(param.rxode = param.rxode, ev = ev, inits = inits)
+      list.sim <- list(sim1)
+      l.param.set <- length(list.sim)
+      
+      #incProgress(1/2)
+      
+      ### simulate the model & plot the system 
+      system.out.list <- list()
+      system.out.list[[1]] <- PBPK.ACAT %>% rxSolve(sim1$param.rxode, sim1$ev, sim1$inits)
+      
+      # plot
+      
+      if(input$keepPlots && flag.clear$flag==0){
+        names.sim <- paste("sim",values$count,sep="")
+        values$system.out.list <- c(values$system.out.list, system.out.list)
+        values$list.sim        <- c(values$list.sim, list.sim)
+        values$names.PBPK      <- names.PBPK
+        values$names.ACAT      <- names.ACAT
+        values$names.sim       <- c(values$names.sim, names.sim)
+        values$count           <- values$count + 1
+      }else{
+        names.sim <- paste("sim","1",sep="")
+        values$system.out.list <- c(system.out.list)
+        values$list.sim        <- c(list.sim)
+        values$names.PBPK      <- names.PBPK
+        values$names.ACAT      <- names.ACAT
+        values$names.sim       <- c(names.sim)
+        values$count           <- 2
+        flag.clear$flag <- 0
+      }
+      
+      list.out <- list(system.out.list, list.sim, names.sim, names.PBPK, names.ACAT)
+      
+      flag.simulated$flag = 1
+      incProgress(1/2)
+      
 
-    # plot
-    p.tot <- plotPBPK(system.out.list, list.sim, names.sim = names.sim)
+    })
     
-    # plot all the organs and tissues (except absorbed and sink enterocytes compartments)
-    #do.call("grid.arrange", c(p.tot$p.pbpk, ncol=5, nrow=4))      # plot all organs mass PK
-    #do.call("grid.arrange", c(p.tot$p.acat.1, ncol=6, nrow=4))    # plot ACAT compartments mass PK
-    #p.tot$p.f.excr    # plot fraction excreted
-    #p.tot$p.f.abs     # plot fraction absorbed
-    #p.tot$p.plasma    # plot plasma concentration PK
-    
-    ptlist <- list(p.tot$p.plasma, p.tot$p.f.excr, p.tot$p.f.abs)
-    do.call("grid.arrange", c(ptlist, ncol=1, nrow=3)) 
-    #return(system.out.list)
   })
   
   
+  ### plot --------------------------------------------------------------------------
   output$PK<-renderPlot({
-    
-    runmodel()
-    #t<-runmodel$time
-    #c<-runmodel$venous_blood
-    
-    #plot(t,c,type="l",xlim=c(0,24),
-    #     xlab="Time (hours)",ylab="Plasma Conc. (mg/L)")
-
+    withProgress(message = 'Plotting plasma PK', value = 0, {
+      if(input$logscale){
+        logscale <- 1
+      }else{
+        logscale <- 0
+      }
+      
+      if(flag.clear$flag==0 && flag.simulated$flag == 1){
+        p.tot <- plotPBPK(values$system.out.list, values$list.sim, names.sim = values$names.sim, values$names.PBPK, values$names.ACAT,logscale,param.drug.library$PK.data.sel)
+        incProgress(1/4)
+        ptlist <- list(p.tot$p.plasma, p.tot$p.f.excr, p.tot$p.f.abs)
+        do.call("grid.arrange", c(ptlist, ncol=1, nrow=3))
+        flag.simulated$flag = 1
+        incProgress(3/4)
+      }
     })
+  })
+  
+  output$PK_comp_PBPK<-renderPlot({
+    withProgress(message = 'Plotting organs PK', value = 0, {
+      if(input$logscale){
+        logscale <- 1
+      }else{
+        logscale <- 0
+      }
+      
+      if(flag.clear$flag==0 && flag.simulated$flag==1 && input$plotOrgansPK){
+        p.tot <- plotPBPK(values$system.out.list, values$list.sim, names.sim = values$names.sim, values$names.PBPK, values$names.ACAT,logscale,param.drug.library$PK.data.sel)
+        incProgress(1/4)
+        do.call("grid.arrange", c(c(p.tot$p.pbpk,p.tot$p.acat.1), ncol=3, nrow=13))
+        incProgress(3/4)
+      }
+    })
+  })
   
   
+  ### functions for activating/deactivating options according to given events -------------------------------------------
+  observeEvent(input$Route, {
+    if(input$Route == 4){
+      shinyjs::enable("inf_dur")
+    }else{
+      shinyjs::disable("inf_dur")
+    }
+  })
+  
+  observeEvent(input$Species, {
+    if(input$Species == "human"){
+      shinyjs::enable("Sex")
+    }else{
+      shinyjs::disable("Sex")
+    }
+  })
+  
+  
+  observeEvent(input$clearPlot, {
+    #hide("PK")
+    flag.clear$flag <- 1
+    flag.simulated$flag <- 0
+    param.drug.library$PK.data.sel <- list()
+  })
+  
+  
+  ### upload parameters values & PK from library ------------------------------------------------------
+  output$libraryDrugs <- renderUI({
+    param_drug <- read_excel("./data/library_drugs/drugsParam.xlsx", sheet="drug_param")
+    param.drug.library$param.drug <- param_drug
+    mydata <- param_drug$drug
+    selectInput('selectedDrug', 'Select drug', c(Choose='', mydata), selectize=FALSE)
+  })
+  
+  # upload the parameters from library
+  observeEvent(input$uploadDrugParam, {
+    
+    # remove plots & old stored data for other drugs
+    param.drug.library$PK.data.sel <- list()
+    flag.clear$flag <- 1
+    flag.simulated$flag <- 0
+    
+    if(input$selectedDrug!=""){
+      
+      # select drug parameters
+      library.param <- param.drug.library$param.drug[param.drug.library$param.drug$drug==input$selectedDrug,]
+      
+      # molecular related parameters
+      updateNumericInput(session,"MW", value = library.param$mw)
+      if(library.param$type=="neutral"){
+        updateRadioButtons(session,"type",selected=0)
+        Csint <- library.param$Cs_w
+      }else if(library.param$type=="acid"){
+        updateRadioButtons(session,"type",selected=1)
+        updateNumericInput(session,"pKa", value = library.param$pKa)
+        Csint <- library.param$Cs_w / (1 + 10^(-library.param$pKa + library.param$pH_ref))
+      }else{
+        updateRadioButtons(session,"type",selected=2)
+        updateNumericInput(session,"pKa", value = library.param$pKa)
+        Csint <- library.param$Cs_w / (1 + 10^( library.param$pKa - library.param$pH_ref))
+      }
+      updateNumericInput(session,"logPow", value = library.param$logPow)
+      updateNumericInput(session,"fup", value = library.param$fup)
+      updateNumericInput(session,"BP", value = library.param$BP)
+      
+      # dissolution and absorption parameters
+      updateNumericInput(session,"r", value = library.param$r)
+      updateNumericInput(session,"rho", value = library.param$rho)
+      updateNumericInput(session,"Csint", value = Csint)
+      updateNumericInput(session,"Peff_caco2", value = library.param$Peff)
+      
+      # clearance parameters
+      updateNumericInput(session,"Clh", value = library.param$Clh)
+      updateNumericInput(session,"Clr", value = library.param$Clr)
+      updateNumericInput(session,"Clent", value = library.param$Clent)
+    }
+    
+  })
+  
+  # define selectInput with drug specific data
+  output$PKData <- renderUI({
+    req(input$selectedDrug)
+    PK.data <- read_excel("./data/library_drugs/dataPK.xlsx", sheet=input$selectedDrug)
+    param.drug.library$PK.data <- PK.data
+    mydata <- unique(PK.data$schedule_ID)
+    selectInput('selectPKData', 'Select PK data', c(Choose='', mydata), selectize=FALSE)
+  })
+  
+  # show action button only if a drug is chosen
+  output$UploadPKData <- renderUI({
+    req(input$selectedDrug)
+    actionButton("uploadDrugPK", "Upload PK", width='100px')
+  })
+  
+  # upload the chosen PK data
+  observeEvent(input$uploadDrugPK,{
+    param.drug.library$PK.data.sel <- param.drug.library$PK.data[param.drug.library$PK.data$schedule_ID==input$selectPKData,]
+  })
+  
+  # reset button
+  observeEvent(input$resetButton,{
+    
+    # remove plots & old stored data for other drugs
+    param.drug.library$PK.data <- list()
+    param.drug.library$PK.data.sel <- list()
+    flag.clear$flag <- 1
+    flag.simulated$flag <- 0
+    updateSelectInput(session, "selectedDrug",selected="")
+    
+    ### default parameters
+    
+    # schedule
+    updateRadioButtons(session,"Route",selected=2) 
+    updateNumericInput(session,"inf_dur", value = 0.5)
+    updateNumericInput(session,"dose", value = 10)
+    updateNumericInput(session,"days", value = 1)
+    updateSliderInput(session,"daily_admin", value=1)
+    
+    # molecular related parameters
+    updateNumericInput(session,"MW", value = 500)
+    updateRadioButtons(session,"type",selected=0)
+    updateNumericInput(session,"logPow", value = 2)
+    updateNumericInput(session,"fup", value = 0.8)
+    updateNumericInput(session,"BP", value = 0.8)
+    
+    # dissolution and absorption parameters
+    updateNumericInput(session,"r", value = 25)
+    updateNumericInput(session,"rho", value = 1000)
+    updateNumericInput(session,"Csint", value = 100)
+    updateNumericInput(session,"Peff_caco2", value = 2)
+    
+    # clearance parameters
+    updateNumericInput(session,"Clh", value = 10)
+    updateNumericInput(session,"Clr", value = 10)
+    updateNumericInput(session,"Clent", value = 0)
+    updateRadioButtons(session,"PCM",selected="PT")
+    
+    # specie and sex
+    updateRadioButtons(session,"Species",selected="human")
+    updateRadioButtons(session,"Sex",selected="female")
+    
+  })
   
   
 })
+
+
+
+
+

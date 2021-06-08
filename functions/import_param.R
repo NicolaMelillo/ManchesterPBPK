@@ -56,7 +56,7 @@
 
 
 ### general notes
-# - as now only a mean human adult male subject of 70kg is supported
+# - as now only a mean human adult female and male subject of 70kg is supported
 # - as now only Poulin & Theil (PT) and Berezhkovsky (bere) partition coefficients are supported
 
 ### todos
@@ -72,6 +72,7 @@ getPartitionCoeff <- function(type, param_drug, param_part_coeff_RR, param_part_
   Dvow_s <- param_drug["Dvow_s"]
   fup    <- param_drug["fup"]
   fut    <- param_drug["fut"]
+  BP     <- param_drug["BP"]
   
   if (type == "PT" || type == "bere"){ # Poulin & Theil or Berezhkovsky
     
@@ -84,6 +85,13 @@ getPartitionCoeff <- function(type, param_drug, param_part_coeff_RR, param_part_
     Vw_PT  <- structure(param_part_coeff_PT$Vw, names=param_part_coeff_PT$organ_name)
     Vnl_PT <- structure(param_part_coeff_PT$Vnl, names=param_part_coeff_PT$organ_name)
     Vph_PT <- structure(param_part_coeff_PT$Vph, names=param_part_coeff_PT$organ_name)
+
+    #f_n_p <- structure(param_part_coeff_RR$f_n_p, names=param_part_coeff_RR$organ_name)
+    #f_n_l <- structure(param_part_coeff_RR$f_n_l, names=param_part_coeff_RR$organ_name)
+    #f_ew  <- structure(param_part_coeff_RR$f_ew,  names=param_part_coeff_RR$organ_name)
+    #f_iw  <- structure(param_part_coeff_RR$f_iw,  names=param_part_coeff_RR$organ_name)
+    #AR    <- structure(param_part_coeff_RR$AR,  names=param_part_coeff_RR$organ_name)
+    #LR    <- structure(param_part_coeff_RR$LR,  names=param_part_coeff_RR$organ_name)
     
     # rearranging the parameters...
     Vw_t  <- Vw_PT[-lo]
@@ -92,6 +100,28 @@ getPartitionCoeff <- function(type, param_drug, param_part_coeff_RR, param_part_
     Vnl_p <- Vnl_PT[lo]
     Vph_t <- Vph_PT[-lo]
     Vph_p <- Vph_PT[lo]
+    #f_n_p_t <- f_n_p[-lo]
+    #f_n_l_t <- f_n_l[-lo]
+    #f_n_p_p <- f_n_p[lo]
+    #f_n_l_p <- f_n_l[lo]
+    
+    # define some useful parameters for RR
+    HCT <- 0.45 #hematocrit
+    Kpu_bc <- (HCT - 1 + BP)/(HCT)
+    
+    if(type == 0){ # netruals
+      X <- 0
+      Y <- 0
+      Z <- 1
+    }else if(type == 1){ # monoprotic acids
+      X <- 10^(pH_IW-pKa)
+      Y <- 10^(pH_P-pKa)
+      Z <- 1
+    }else if(type ==2){ # monoprotic bases
+      X <- 10^(pKa-pH_IW)
+      Y <- 10^(pKa-pH_P)
+      Z <- 10^(pKa-pH_RBC)
+    }
     
     # derive the partition coefficients
     if (type=="PT"){                    # Poulin & Theil
@@ -124,7 +154,26 @@ getPartitionCoeff <- function(type, param_drug, param_part_coeff_RR, param_part_
         part_coeff_a[param_part_coeff_PT$organ_name[i]]  <- (  Dvow_s*(Vnl_ti + 0.3*Vph_ti) + (Vw_ti/fut + 0.7*Vph_ti) )/( Dvow_s*(Vnl_p + 0.3*Vph_p) + (Vw_p/fup + 0.7*Vph_p) );
       }
       
-    }
+    }#else if(type=="RR_neutrals"){
+      
+      #for(i in 1:lo-1){
+        
+      #  Vw_p  <- Vw_PT[lo]
+      #  Vnl_p <- Vnl_PT[lo]
+      #  Vph_p <- Vph_PT[lo]
+        
+      #  Vw_ti  <- Vw_PT[param_part_coeff_PT$organ_name[i]]
+      #  Vnl_ti <- Vnl_PT[param_part_coeff_PT$organ_name[i]]
+      #  Vph_ti <- Vph_PT[param_part_coeff_PT$organ_name[i]]
+        
+      #  Ka_PR <- (1/fup - 1 - (P*dat_plas$f_n_l + (0.3*P + 0.7)*dat_plas$f_n_pl)/(1+Y))
+      #  Ka_AP <- (Kpu_bc - (1 + Z)/(1 + Y)*dat_rbc$f_iw - (P*dat_rbc$f_n_l + (0.3*P + 0.7)*dat_rbc$f_n_pl)/(1 + Y)) * (1 + Y)/dat_rbc$f_a_pl/Z
+        
+      #  Kp_all <- (dat_all$f_ew + ((1 + X)/(1 + Y))*dat_all$f_iw + ((P*dat_all$f_n_l + (0.3*P + 0.7)*dat_all$f_n_pl))/(1 + Y) + (Ka_AP*dat_all$f_a_pl*X)/(1 + Y))*fup  #non lipid
+      #  Kp_ad <- (dat_ad$f_ew + ((1 + X)/(1 + Y))*dat_ad$f_iw + ((P_OW*dat_ad$f_n_l + (0.3*P_OW + 0.7)*dat_ad$f_n_pl))/(1 + Y) + (Ka_AP*dat_ad$f_a_pl*X)/(1 + Y))*fup  #lipid
+     # }
+      
+    #}
     
     # set the nonadpose partition coefficients for all the organs except the fat, where the adipose partition coefficients are set
     part_coeff <- part_coeff_na
@@ -168,13 +217,8 @@ getPBPKParam <- function(filename, param_drug, type_part_coeff, specie){
   ### readapt ORGANS parameters
   organ_bf <- structure(param_organs$blood_flow, names=param_organs$organ_name)  # [L/h]
   organ_d  <- structure(param_organs$density, names=param_organs$organ_name)     # [Kg/L]
-  if(specie=="human"){
-    organ_w  <- structure(param_organs$mass, names=param_organs$organ_name)        # [Kg]
-    organ_v  <- organ_w/organ_d                                                    # [L]
-  }else{
-    organ_v  <- structure(param_organs$volume, names=param_organs$organ_name)        # [Kg]
-    organ_w  <- organ_v*organ_d                                                    # [L]
-  }
+  organ_v  <- structure(param_organs$volume, names=param_organs$organ_name)        # [Kg]
+  organ_w  <- organ_v*organ_d                                                    # [L]
   
   
   ### readapt ACAT parameters
@@ -264,6 +308,34 @@ getPBPKParam <- function(filename, param_drug, type_part_coeff, specie){
   return(output_list)
   
 }
+
+
+
+
+
+
+### reorganize parameters for RxODE --------------------------------------------------------------------------------------------
+
+reorganizeParam.rxode <- function(param.PBPK){
+
+  # get names compartments and remove from param.PBPK list
+  comp_PBPK_names <- param.PBPK$comp_PBPK_names
+  comp_ACAT_names <- param.PBPK$comp_ACAT_names
+  param.PBPK$comp_PBPK_names <- NULL
+  param.PBPK$comp_ACAT_names <- NULL
+  
+  names.list <- names(param.PBPK)
+  param.PBPK.v <- c()
+  
+  for(i in 1:length(names.list)){
+    vect.i <- unname(param.PBPK[[names.list[i]]])
+    names(vect.i) <- paste(names.list[i],names(param.PBPK[[names.list[i]]]),sep="_")
+    param.PBPK.v <- c(param.PBPK.v, vect.i)
+  }
+  
+  return(param.PBPK.v)
+  
+  }
 
 
 
