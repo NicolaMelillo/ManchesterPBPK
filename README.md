@@ -10,7 +10,7 @@ Authors: *Nicola Melillo & Hitesh Mistry*
 ## Files
 - `server.R`: Shiny server function, it contains the "logics" of the applications (e.g., what happens when clicking a button).
 - `ui.R`: Shiny user interface function, it contains the visual aspect of the application.
-- `main_pbpk_acat.R`: R script that can be used to run the model outside the Shiny app. This fine is not used in `server.R` or `ui.R`.
+- `main_pbpk_acat.R`: R script that can be used to run the model outside the Shiny app. This file is not used in `server.R` or `ui.R`.
 - `functions/PBPK_model_rxode.R`: it contains the ordinary differential equations of the PBPK and compartmental absorption & transit (CAT) models, written in `RxODE` format.
 - `functions/import_param.R`: it contains the functions used to import and elaborate the PBPK and CAT model parameters.
 - `functions/functions_plot3.R`: it contains the functions used to generate the plots.
