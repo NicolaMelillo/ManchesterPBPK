@@ -224,11 +224,11 @@ shinyServer(function(input, output, session) {
       
       if(input$Route == 4){
         ev <- eventTable(amount.units="mg", time.units="hr") %>%
-          add.dosing(dose=dose, dosing.to=comp_dose, nbr.doses=n_rep, dosing.interval=time_interval, dur=input$inf_dur) %>%
+          add.dosing(dose=as.double(dose), dosing.to=comp_dose, nbr.doses=n_rep, dosing.interval=time_interval, dur=input$inf_dur) %>%
           add.sampling(seq(0,n_rep * time_interval + time_interval_end,by=0.01))
       }else{
         ev <- eventTable(amount.units="mg", time.units="hr") %>%
-          add.dosing(dose=dose, dosing.to=comp_dose, nbr.doses=n_rep, dosing.interval=time_interval) %>%
+          add.dosing(dose=as.double(dose), dosing.to=comp_dose, nbr.doses=n_rep, dosing.interval=time_interval) %>%
           add.sampling(seq(0,n_rep * time_interval + time_interval_end,by=0.01))
       }
       
@@ -862,6 +862,7 @@ shinyServer(function(input, output, session) {
         fs <- c(fs, paste(filename_i,sep=""))
         
       }
+      
       remove_modal_spinner()
       
       zip(zipfile=file, files=fs)

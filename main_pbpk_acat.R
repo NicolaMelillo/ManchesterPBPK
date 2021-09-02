@@ -16,7 +16,6 @@
 # libraries
 library(readxl)
 library(RxODE)
-library(deSolve)
 library(ggplot2)
 library(RColorBrewer)
 library(gridExtra)
@@ -157,7 +156,7 @@ param.rxode["GFR_flag"] <- 1
 inits <- c()
 
 ev <- eventTable(amount.units="mg", time.units="hr") %>%
-  add.dosing(dose=10, dosing.to="stomach_s", nbr.doses=1, dosing.interval=12) %>%
+  add.dosing(dose=as.double(10), dosing.to="stomach_s", nbr.doses=1, dosing.interval=12) %>%
   add.sampling(seq(0,24,by=0.01))
 
 ev
@@ -191,7 +190,9 @@ for(i in 1:l.param.set){
 # plot
 flag_log <- 0
 data.PK <- list()
-p.tot <- plotPBPK(system.out.list, list.sim, names.sim = names.sim, names.PBPK, names.ACAT, flag_log, data.PK)
+axis.limits <- list(xaxis = NA,
+                    yaxis = NA)
+p.tot <- plotPBPK(system.out.list, list.sim, names.sim = names.sim, names.PBPK, names.ACAT, flag_log, data.PK, axis.limits)
 
 # plot all the organs and tissues (except absorbed and sink enterocytes compartments)
 #do.call("grid.arrange", c(p.tot$p.pbpk, ncol=5, nrow=4))      # plot all organs mass PK
