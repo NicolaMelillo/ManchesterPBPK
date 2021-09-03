@@ -3,7 +3,7 @@ Basic physiologically based pharmacokinetics (PBPK) model for performing single 
 
 A running version of the app che be found here: https://manchester.shinyapps.io/pbpk/.
 
-The last version of the software was updated on 02 August 2021.
+The last version of the software was updated on 03 September 2021.
 
 Authors: *Nicola Melillo & Hitesh Mistry*
 
